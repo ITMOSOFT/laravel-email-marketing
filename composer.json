@@ -1,0 +1,23 @@
+{
+  "name": "itmosoft/laravel-email-marketing",
+  "description": "Email audiences, consent-aware subscribers, reusable templates, campaign orchestration, and campaign metrics for Laravel.",
+  "type": "library",
+  "license": "MIT",
+  "require": {
+    "php": "^8.3",
+    "illuminate/contracts": "^12.0 || ^13.0",
+    "illuminate/database": "^12.0 || ^13.0",
+    "illuminate/support": "^12.0 || ^13.0",
+    "illuminate/validation": "^12.0 || ^13.0"
+  },
+  "require-dev": {
+    "orchestra/testbench": "^10.0 || ^11.0",
+    "phpunit/phpunit": "^11.5 || ^12.0"
+  },
+  "autoload": {"psr-4": {"ItmoSoft\\EmailMarketing\\": "src/"}},
+  "autoload-dev": {"psr-4": {"ItmoSoft\\EmailMarketing\\Tests\\": "tests/"}},
+  "extra": {"laravel": {"providers": ["ItmoSoft\\EmailMarketing\\EmailMarketingServiceProvider"]}},
+  "scripts": {"test": "phpunit"},
+  "minimum-stability": "stable",
+  "prefer-stable": true
+}
