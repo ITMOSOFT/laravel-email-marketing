@@ -1,4 +1,4 @@
-# Release guide — v1.0.0
+# Release guide — v1.0.1
 
 Repository: `ITMOSOFT/laravel-email-marketing`
 
@@ -10,49 +10,43 @@ Consent-aware email audiences, reusable templates, campaign orchestration, and c
 
 ## User-run Git commands
 
-Run locally from the extracted package directory. Review the staged changes before committing.
+Run locally from the package directory after reviewing changes and confirming tests:
 
 ```bash
-git init
-git branch -M main
-git add .
 git status
-git commit -m "chore: initial Laravel email marketing package"
-git remote add origin https://github.com/ITMOSOFT/laravel-email-marketing.git
-git push -u origin main
+git add .
+git diff --cached
+git commit -m "fix: harden email marketing consent and campaign lifecycle"
+git push origin main
 ```
 
 After local tests and GitHub Actions pass:
 
 ```bash
-git tag -a v1.0.0 -m "Release v1.0.0"
-git push origin v1.0.0
+git fetch origin --tags
+git tag -a v1.0.1 -m "Release v1.0.1"
+git push origin v1.0.1
 ```
 
 ## GitHub Release
 
-Title: `v1.0.0 - Initial Release`
+Title: `v1.0.1 - Consent and Campaign Lifecycle Improvements`
 
 Description:
 
-Initial release of ITMOSOFT Laravel Email Marketing.
+- Serialize campaign queue/start transitions using database transactions and row locks.
+- Re-check current consent and audience association immediately before delivery.
+- Preserve delivery timestamps across repeated provider callbacks.
+- Add explicit bounce recording for campaign metrics.
+- Normalize subscriber email addresses before validation.
+- Expand test coverage for lifecycle, unsubscribe suppression, audience isolation, and bounce metrics.
 
-- Consent-aware audiences and subscriber lifecycle management.
-- Subscriber opt-in and unsubscribe timestamps and consent source.
-- Reusable HTML/plain-text email templates.
-- Campaign lifecycle and recipient snapshots.
-- Campaign-level delivered, opened, clicked, and bounced counts.
-- Configurable tables and model classes.
-- Laravel 12/13 and PHP 8.3+ support.
-
-Delivery-provider integration and background dispatch remain application responsibilities in this release.
+Compatibility: PHP 8.3+, Laravel 12 and 13.
 
 ## Packagist
 
-1. Open https://packagist.org/packages/submit
-2. Submit `https://github.com/ITMOSOFT/laravel-email-marketing`
-3. Configure the Packagist GitHub webhook if prompted.
-4. Confirm Packagist detects tag `v1.0.0`.
-5. Verify installation with `composer require itmosoft/laravel-email-marketing`.
+1. Confirm the GitHub repository is connected to Packagist.
+2. Confirm Packagist detects tag `v1.0.1`.
+3. Verify installation with `composer require itmosoft/laravel-email-marketing:^1.0.1`.
 
 Do not publish until local tests and the GitHub Actions matrix pass.

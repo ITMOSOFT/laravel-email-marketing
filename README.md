@@ -24,6 +24,7 @@ $manager = app(EmailMarketingManager::class);
 
 $audience = $manager->createAudience('Product updates');
 
+// Call subscribe only after your application has established a valid consent basis.
 $subscriber = $manager->subscribe(
     $audience,
     'person@example.com',
@@ -40,13 +41,24 @@ $template = $manager->createTemplate(
 
 $campaign = $manager->createCampaign($audience, $template, 'November update');
 $campaign = $manager->queueCampaign($campaign);
-```
+$campaign = $manager->markSending($campaign);
 
-A queue worker or application-owned delivery adapter can process `CampaignRecipient` records and call `recordDelivery`, `recordOpen`, and `recordClick` as provider events arrive.
+foreach ($campaign->recipients as $recipient) {
+    // Re-check current consent immediately before sending. This catches
+    // unsubscribes that happened after the campaign recipient snapshot.
+    if (! $manager->isRecipientEligibleForDelivery($recipient)) {
+        continue;
+    }
+
+    // Hand the recipient to your configured mail provider/queue adapter.
+}
+```
 
 ## Consent and unsubscribe
 
-`subscribe()` records a consent timestamp and optional consent source. `unsubscribe()` changes the subscriber status and records the unsubscribe timestamp. Campaign queuing snapshots only subscribers whose status is `subscribed` and whose `consented_at` is not null.
+`subscribe()` normalizes the email address, records a consent timestamp, and stores an optional consent source. `unsubscribe()` changes the subscriber status and records the unsubscribe timestamp. Campaign queuing snapshots only subscribers whose status is `subscribed` and whose `consented_at` is not null.
+
+A queued campaign is a snapshot, not a permanent grant of permission to send. **Always call `isRecipientEligibleForDelivery()` immediately before provider handoff.** This re-checks the subscriber's current status, consent timestamp, and audience association so a later unsubscribe is respected.
 
 Do not call `subscribe()` merely because an email address was imported. Only call it after your application has established a valid consent basis. Keep evidence of consent and comply with applicable privacy and anti-spam laws.
 
@@ -54,35 +66,40 @@ Do not call `subscribe()` merely because an email address was imported. Only cal
 
 `draft` → `queued` → `sending`
 
-The manager enforces the draft-to-queued and queued-to-sending transitions. Delivery execution is intentionally delegated to your application. The package stores recipient snapshots to preserve the audience selected at queue time.
+The manager enforces these transitions inside database transactions with row locks. Recipient records are created once per campaign/subscriber pair. Delivery execution remains the responsibility of your application or provider adapter.
 
-## Metrics
+## Delivery and metrics
 
 ```php
-$metrics = $manager->metrics($campaign);
+$manager->recordDelivery($recipient);
+$manager->recordOpen($recipient);
+$manager->recordClick($recipient);
+$manager->recordBounce($recipient);
 
+$metrics = $manager->metrics($campaign);
 // recipients, delivered, opened, clicked, bounced
 ```
 
-Open and click metrics depend on trustworthy provider callbacks or tracking endpoints implemented by your application. They are counts, not unique-recipient rates.
+Delivery timestamps are retained on repeated delivery callbacks. Open and click timestamps are first-event timestamps. Open/click metrics depend on trustworthy provider callbacks or tracking endpoints implemented by your application. They are counts, not unique-recipient rates.
 
 ## Configuration
 
-`config/email-marketing.php` supports table prefixes, table names, and model class overrides.
+`config/email-marketing.php` supports table prefixes, table names, and model class overrides. The published config key is `itmosoft-email-marketing`.
 
 ## Security and operational notes
 
 - Add authorization, rate limiting, double opt-in workflows, bot protection, and unsubscribe HTTP endpoints in your application.
-- Keep unsubscribe links functional and ensure suppression is honored across campaigns.
+- Keep unsubscribe links functional and ensure suppression is honored across campaigns by re-checking recipient eligibility immediately before send.
 - Do not place sensitive personal data in subscriber attributes or campaign metadata without a clear need and retention policy.
-- Escape/untrusted-template rendering and personalization must be handled safely by the rendering layer.
-- Provider delivery, retries, bounce/complaint webhooks, open/click tracking endpoints, segmentation, scheduled dispatch workers, and suppression lists are not included in v1.0.0.
+- Escape untrusted template content and handle personalization safely in the rendering layer.
+- Provider delivery, retries, bounce/complaint webhooks, open/click tracking endpoints, segmentation, scheduled dispatch workers, and suppression lists are not included.
 - Tenant isolation is not automatic; scope queries and authorization in your application.
-- Audience membership is a single-audience relationship in this release. A subscriber may appear in more than one audience using separate records.
+- Audience membership is a single-audience relationship. A subscriber may appear in more than one audience using separate records.
 
 ## Testing
 
 ```bash
+composer validate --strict
 composer install
 composer test
 ```

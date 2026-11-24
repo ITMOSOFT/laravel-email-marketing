@@ -4,7 +4,6 @@ namespace ItmoSoft\EmailMarketing\Services;
 
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Validator;
-use Illuminate\Validation\ValidationException;
 use ItmoSoft\EmailMarketing\Enums\CampaignStatus;
 use ItmoSoft\EmailMarketing\Enums\SubscriberStatus;
 use ItmoSoft\EmailMarketing\Models\Audience;
@@ -23,9 +22,10 @@ class EmailMarketingManager
 
     public function subscribe(Audience $audience, string $email, array $attributes = [], ?string $consentSource = null): Subscriber
     {
+        $email = strtolower(trim($email));
         Validator::make(['email' => $email], ['email' => ['required', 'email', 'max:255']])->validate();
 
-        $subscriber = $audience->subscribers()->firstOrNew(['email' => mb_strtolower(trim($email))]);
+        $subscriber = $audience->subscribers()->firstOrNew(['email' => $email]);
         $subscriber->fill([
             'status' => SubscriberStatus::Subscribed,
             'attributes' => $attributes,
@@ -55,7 +55,10 @@ class EmailMarketingManager
         }
 
         return $this->model('template')::query()->create([
-            'name' => $name, 'subject' => $subject, 'html' => $html, 'text' => $text,
+            'name' => $name,
+            'subject' => $subject,
+            'html' => $html,
+            'text' => $text,
         ]);
     }
 
@@ -70,66 +73,130 @@ class EmailMarketingManager
         ]);
     }
 
-    /**
-     * Freeze the currently consented audience into a recipient snapshot.
-     * A delivery adapter/queue worker should process these recipient records.
-     */
+    /** Freeze the currently consented audience into an immutable recipient snapshot. */
     public function queueCampaign(Campaign $campaign): Campaign
     {
-        if ($campaign->status !== CampaignStatus::Draft) {
-            throw new InvalidArgumentException('Only draft campaigns can be queued.');
-        }
-
         return DB::transaction(function () use ($campaign): Campaign {
+            $lockedCampaign = $this->model('campaign')::query()
+                ->whereKey($campaign->getKey())
+                ->lockForUpdate()
+                ->firstOrFail();
+
+            if ($lockedCampaign->status !== CampaignStatus::Draft) {
+                throw new InvalidArgumentException('Only draft campaigns can be queued.');
+            }
+
             $subscribers = $this->model('subscriber')::query()
-                ->where('audience_id', $campaign->audience_id)
+                ->where('audience_id', $lockedCampaign->audience_id)
                 ->where('status', SubscriberStatus::Subscribed->value)
                 ->whereNotNull('consented_at')
                 ->get(['id', 'email']);
 
             foreach ($subscribers as $subscriber) {
                 $this->model('recipient')::query()->firstOrCreate(
-                    ['campaign_id' => $campaign->getKey(), 'subscriber_id' => $subscriber->getKey()],
+                    ['campaign_id' => $lockedCampaign->getKey(), 'subscriber_id' => $subscriber->getKey()],
                     ['email' => $subscriber->email, 'status' => 'pending']
                 );
             }
 
-            $campaign->forceFill(['status' => CampaignStatus::Queued])->save();
+            $lockedCampaign->forceFill(['status' => CampaignStatus::Queued])->save();
 
-            return $campaign->refresh();
+            return $lockedCampaign->refresh();
         });
     }
 
     public function markSending(Campaign $campaign): Campaign
     {
-        if ($campaign->status !== CampaignStatus::Queued) {
-            throw new InvalidArgumentException('Only queued campaigns can start sending.');
+        return DB::transaction(function () use ($campaign): Campaign {
+            $lockedCampaign = $this->model('campaign')::query()
+                ->whereKey($campaign->getKey())
+                ->lockForUpdate()
+                ->firstOrFail();
+
+            if ($lockedCampaign->status !== CampaignStatus::Queued) {
+                throw new InvalidArgumentException('Only queued campaigns can start sending.');
+            }
+
+            $lockedCampaign->forceFill(['status' => CampaignStatus::Sending])->save();
+
+            return $lockedCampaign->refresh();
+        });
+    }
+
+    /**
+     * Re-check current consent immediately before handing a recipient to a provider.
+     * This catches an unsubscribe that happened after the campaign was queued.
+     */
+    public function isRecipientEligibleForDelivery(CampaignRecipient $recipient): bool
+    {
+        // Force a fresh relationship read: callers may hold a recipient instance
+        // whose subscriber relation was loaded before an unsubscribe occurred.
+        $recipient->load(['campaign', 'subscriber']);
+        $campaign = $recipient->campaign;
+        $subscriber = $recipient->subscriber;
+
+        if ($campaign === null || $subscriber === null) {
+            return false;
         }
 
-        $campaign->forceFill(['status' => CampaignStatus::Sending])->save();
+        $campaignStatus = $campaign->status instanceof CampaignStatus
+            ? $campaign->status->value
+            : $campaign->status;
+        $subscriberStatus = $subscriber->status instanceof SubscriberStatus
+            ? $subscriber->status->value
+            : $subscriber->status;
 
-        return $campaign->refresh();
+        return in_array($campaignStatus, [CampaignStatus::Queued->value, CampaignStatus::Sending->value], true)
+            && (int) $campaign->audience_id === (int) $subscriber->audience_id
+            && $subscriberStatus === SubscriberStatus::Subscribed->value
+            && $subscriber->consented_at !== null;
     }
 
     public function recordDelivery(CampaignRecipient $recipient): CampaignRecipient
     {
-        $recipient->forceFill(['status' => 'delivered', 'delivered_at' => now()])->save();
+        return $this->withLockedRecipient($recipient, function (CampaignRecipient $locked): void {
+            $locked->forceFill([
+                'status' => $locked->status === 'bounced' ? 'bounced' : 'delivered',
+                'delivered_at' => $locked->delivered_at ?? now(),
+            ])->save();
+        });
+    }
 
-        return $recipient->refresh();
+    public function recordBounce(CampaignRecipient $recipient): CampaignRecipient
+    {
+        return $this->withLockedRecipient($recipient, function (CampaignRecipient $locked): void {
+            $locked->forceFill(['status' => 'bounced'])->save();
+        });
     }
 
     public function recordOpen(CampaignRecipient $recipient): CampaignRecipient
     {
-        $recipient->forceFill(['status' => $recipient->status, 'opened_at' => $recipient->opened_at ?? now()])->save();
-
-        return $recipient->refresh();
+        return $this->withLockedRecipient($recipient, function (CampaignRecipient $locked): void {
+            $locked->forceFill(['opened_at' => $locked->opened_at ?? now()])->save();
+        });
     }
 
     public function recordClick(CampaignRecipient $recipient): CampaignRecipient
     {
-        $recipient->forceFill(['status' => $recipient->status, 'clicked_at' => $recipient->clicked_at ?? now()])->save();
+        return $this->withLockedRecipient($recipient, function (CampaignRecipient $locked): void {
+            $locked->forceFill(['clicked_at' => $locked->clicked_at ?? now()])->save();
+        });
+    }
 
-        return $recipient->refresh();
+    /** Apply provider events against a fresh, locked row so out-of-order or stale
+     * webhook payloads cannot overwrite a previously recorded terminal state. */
+    protected function withLockedRecipient(CampaignRecipient $recipient, callable $callback): CampaignRecipient
+    {
+        return DB::transaction(function () use ($recipient, $callback): CampaignRecipient {
+            $locked = $this->model('recipient')::query()
+                ->whereKey($recipient->getKey())
+                ->lockForUpdate()
+                ->firstOrFail();
+
+            $callback($locked);
+
+            return $locked->refresh();
+        });
     }
 
     public function metrics(Campaign $campaign): array

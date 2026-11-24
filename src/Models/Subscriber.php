@@ -17,7 +17,12 @@ class Subscriber extends Model
 
     protected function casts(): array
     {
-        return ['status' => SubscriberStatus::class, 'consented_at' => 'datetime', 'unsubscribed_at' => 'datetime', 'attributes' => 'array'];
+        return [
+            'status' => SubscriberStatus::class,
+            'consented_at' => 'datetime',
+            'unsubscribed_at' => 'datetime',
+            'attributes' => 'array',
+        ];
     }
 
     public function audience(): BelongsTo
